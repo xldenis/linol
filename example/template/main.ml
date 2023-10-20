@@ -43,6 +43,8 @@ class lsp_server =
     val buffers : (Lsp.Types.DocumentUri.t, state_after_processing) Hashtbl.t =
       Hashtbl.create 32
 
+    method spawn_query_handler f = Linol_lwt.spawn f
+
     (* We define here a helper method that will:
        - process a document
        - store the state resulting from the processing
@@ -79,7 +81,10 @@ class lsp_server =
 let run () =
   let s = new lsp_server in
   let server = Linol_lwt.Jsonrpc2.create_stdio s in
-  let task = Linol_lwt.Jsonrpc2.run server in
+  let task =
+    let shutdown () = s#get_status = `ReceivedExit in
+    Linol_lwt.Jsonrpc2.run ~shutdown server
+  in
   match Linol_lwt.run task with
   | () -> ()
   | exception e ->

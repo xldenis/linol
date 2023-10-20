@@ -1,3 +1,5 @@
+(** Server interface *)
+
 open Sigs
 
 type nonrec doc_state = {
@@ -8,9 +10,9 @@ type nonrec doc_state = {
 }
 (** Current state of a document. *)
 
-(** {2 Request ID}
+(** Request ID.
 
-    unique ID of a request, used by JSONRPC to map each request to its reply. *)
+    The unique ID of a request, used by JSONRPC to map each request to its reply. *)
 module Req_id = struct
   type t = Jsonrpc.Id.t
 
@@ -20,7 +22,7 @@ module Req_id = struct
     | `Int i -> string_of_int i
 end
 
-(** {2 Server interface for some IO substrate} *)
+(** Server interface for some IO substrate. *)
 module Make (IO : IO) = struct
   open Lsp.Types
   module Position = Position
@@ -65,6 +67,11 @@ module Make (IO : IO) = struct
 
       method must_quit = false
       (** Set to true if the client requested to exit *)
+
+      method virtual spawn_query_handler : (unit -> unit IO.t) -> unit
+      (** How to start a new future/task/thread concurrently. This is used
+          to process incoming user queries.
+          @since NEXT_RELEASE *)
     end
 
   (** A wrapper to more easily reply to notifications *)
@@ -73,6 +80,7 @@ module Make (IO : IO) = struct
     object
       val mutable uri = uri
       method set_uri u = uri <- Some u
+      method get_uri = uri
 
       method send_log_msg ~type_ msg : unit IO.t =
         let params = LogMessageParams.create ~type_ ~message:msg in
@@ -123,7 +131,8 @@ module Make (IO : IO) = struct
                { value = Lsp.Server_notification.Progress.End p; token }
         | None -> IO.return ()
 
-      method send_notification (n : Lsp.Server_notification.t) = notify_back n
+      method send_notification (n : Lsp.Server_notification.t) : unit IO.t =
+        notify_back n
       (** Send a notification from the server to the client (general purpose method) *)
 
       method send_request
@@ -150,9 +159,15 @@ module Make (IO : IO) = struct
   class virtual server =
     object (self)
       inherit base_server
-      val mutable _quit = false
+
+      val mutable status : [ `Running | `ReceivedShutdown | `ReceivedExit ] =
+        `Running
+
       val docs : (DocumentUri.t, doc_state) Hashtbl.t = Hashtbl.create 16
-      method! must_quit = _quit
+
+      method get_status = status
+      (** Check if exit or shutdown request was made by the client.
+        @since NEXT_RELEASE *)
 
       method find_doc (uri : DocumentUri.t) : doc_state option =
         try Some (Hashtbl.find docs uri) with Not_found -> None
@@ -310,7 +325,7 @@ module Make (IO : IO) = struct
           match r with
           | Lsp.Client_request.Shutdown ->
             Log.info (fun k -> k "shutdown");
-            _quit <- true;
+            status <- `ReceivedShutdown;
             IO.return ()
           | Lsp.Client_request.Initialize i ->
             Log.debug (fun k -> k "req: initialize");
@@ -590,7 +605,7 @@ module Make (IO : IO) = struct
             ~old_content:(Lsp.Text_document.text old_doc)
             ~new_content:new_st.content
         | Lsp.Client_notification.Exit ->
-          _quit <- true;
+          status <- `ReceivedExit;
           IO.return ()
         | Lsp.Client_notification.DidSaveTextDocument _
         | Lsp.Client_notification.WillSaveTextDocument _
